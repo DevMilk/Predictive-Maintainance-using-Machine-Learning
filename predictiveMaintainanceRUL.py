@@ -7,12 +7,16 @@ Created on Mon Jul 27 14:20:12 2020
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import os
 
+os.chdir("C:\\Users\\Uğur Keskin\\Desktop\\Staj\\Predictive maintenence\\Data2")
 figDir = "Figures/" 
 #%%
 from sklearn import preprocessing
 
 def split(): print("\n____________________________________________________________________________________\n")
+
+#Tüm featureler için korelasyon matrisi
 def plotCorrelationMatrix(df, graphWidth):  
     df = df[[col for col in df if df[col].nunique() > 1]] # keep columns where there are more than 1 unique values
     if df.shape[1] < 2:
@@ -27,6 +31,7 @@ def plotCorrelationMatrix(df, graphWidth):
     plt.colorbar(corrMat)
     plt.title(f'Correlation Matrix for xd', fontsize=40)
     plt.show()
+#Boxplot, gruplama ve korelasyonların hepsini analiz eden all-in-one fonksiyon
     plt.savefig(figDir+'CorrelationMatrix.png')
 def intro(df,graph=True,splitPlots=True,EraseNullColumns=False,printCorrelations=True,corrThreshold=0.5):
     
@@ -105,6 +110,7 @@ def intro(df,graph=True,splitPlots=True,EraseNullColumns=False,printCorrelations
             print("No Correlation Found") 
     return dataframe
 
+#KDE dağılımı ile featureları plotlar
 def plotCols(df,time):
     
     for col in df.columns:
@@ -118,28 +124,21 @@ def plotCols(df,time):
             plt.show()
             plt.savefig(figDir+'{}.png'.format(time+"-"+col))
         
+#Verilen feature'ları scatter ile Y'ye göre karşılaştırır.        
 def XCorrWithY(df, X, Y):
     for col in  X:
         print(col,"-",Y)
         plt.scatter(df[col],df[Y]) 
         plt.title("{}-{}".format(col,Y))
-        plt.show()
-        plt.savefig(figDir+'{}.png'.format(col+"-"+Y))
-        
-def create_dataset(dataset, look_back=1):
-	dataX, dataY = [], []
-	for i in range(len(dataset)-look_back-1):
-		a = dataset.iloc[i:(i+look_back), :-1]
-		dataX.append(a.to_numpy())
-		dataY.append(dataset.iloc[i + look_back, -1]) 
-	return np.array(dataX), np.array(dataY)       
+        plt.show()    
+#Dataframeyi normalize eder. (Preprocessing)        
 def normalizedf(df,offset=0):
     min_max_scaler = preprocessing.MinMaxScaler() 
     new = df.copy()
     cols = df.columns[offset:]
-    new[cols] = min_max_scaler.fit_transform(new[cols]) 
+    new[cols] = (min_max_scaler.fit_transform(new[cols]) )  
     return new    
-#%%
+#%% Tüm Makinelerin verilerini import et
     
 colnames = ["unit_num","time_in_cycles" ]
 for i in range(3):
@@ -163,14 +162,20 @@ for i in range(4):
 for i in range(4):
     testYs.append(getData("RUL",i+1,names=["Y"]))       
 
-#%% Get one
+#%% Makinelerden birini seç
 index = 0
 traindf = traindfs[index]
 testdf  = testdfs[index]
-testY   = testYs[index] 
- 
+testY   = testYs[index]  
+#           R^2   MAE     RMSE 
+# Index 0  0.74  17.27   21.27 : LSTM
+# Index 0  0.72  17.27   27.09 : STACK MLP+LASSO -> MLP LOOK_BACK: 31
+# Index 1  0.61  25.66   33.64 : LGMRegressor           LOOK_BACK: 21
+# Index 2  0.51  20.49   29.01 : STACK MLP+LASSO -> MLP LOOK_BACK: 35
+# Index 3 -> look back = 19
+# Denenecekler: Sabit look_back ile bu look_back'in altında kalan veriler gözardı edilecek
 
-#%% ANALİZ
+#%% Veri ANALİZİ
 intro(traindf)
 plotCols(traindf,"time_in_cycles")
 XCorrWithY(traindf,["s9"],"s14")
@@ -230,16 +235,19 @@ def create_dataset(dataset, look_back=1):
 	return np.array(dataX), np.array(dataY)  
 trainX = traindf
 testX = testdf
-#trainX,deletedCols = removeSame(traindf.iloc[:,:])
-#testX = testdf.drop(columns=deletedCols)   
-#input_features = get_train_columns(trainX,0.75) 
-#trainX, testX = trainX[input_features], testX[input_features]
+#Her devirde Sabit kalan değerleri çıkar 
+trainX,deletedCols = removeSame(traindf.iloc[:,:],threshold=1)
+testX = testdf.drop(columns=deletedCols)   
+
+#Korelasyonu başka feature'lardan belirli seviteen fazla olan fetureları çıkar 
+input_features = get_train_columns(trainX,0.75) 
+trainX, testX = trainX[input_features], testX[input_features]
 #Her unit için çalıştığı en fazla devir
 trainYs = traindf.groupby(["unit_num"]).time_in_cycles.max()
-#%% Method 1
-trainX.groupby(["unit_num"]).agg([min,max,'mean','std','var','last'])
-
-input_features = get_train_columns(trainX,0.75) 
+#%% YAPIŞ 
+X = trainX.groupby(["unit_num"]).agg([min,max,'mean','std','var','count'])
+X = X.iloc[:,6:]
+X = normalizedf(X) 
 #Aynı kalanlara gerek yok (Eğer her texttekileri ayrı ele alacaksak)          
 #Bir korelasyon thresholdu belirleyip o thresholdu aşanları train'e katmayalım
 #Training'de s14 ve op_setting 3 yer almayacak
@@ -250,8 +258,7 @@ input_features = get_train_columns(trainX,0.75)
 
 #%% Method 2
 
-
-# Targetleri ayarla 
+ 
 X = trainX.copy()
 Y = trainYs.copy()
 tX = testX.copy()
@@ -259,6 +266,7 @@ tY = testY.copy()
 X["time"] = X["time_in_cycles"]
 tX["time"] = tX["time_in_cycles"]
 unitnums = trainX.unit_num.unique() 
+X, tX = normalizedf(X,offset=2).fillna(0), normalizedf(tX,offset=2).fillna(0) 
 
 
 X["Y"]=X.time_in_cycles
@@ -268,10 +276,9 @@ for i in range(len(unitnums)):
 
        
     
-X, tX = normalizedf(X,offset=2).fillna(0), normalizedf(tX,offset=2).fillna(0) 
 
 #Prepare train for all units without intercepting with each other     
-look_back = 24
+look_back = min(trainYs.min(),testX.groupby(["unit_num"]).time_in_cycles.max().min())
 assert look_back<=min(trainYs.min(),testX.groupby(["unit_num"]).time_in_cycles.max().min())
  
 unitnums = trainX.unit_num.unique()  
@@ -289,7 +296,10 @@ print(tX.shape,X.shape)
 testarrX = [tX[tX['unit_num']==id].values[-look_back:] for id in unitnums ]
 print(tX.shape,X.shape)
 
-testarrX = np.asarray(testarrX).astype(np.float32)
+if(not testarrX[-1].shape[0]):
+    testarrX = testarrX[:-1]
+testarrX = np.asarray(testarrX ).astype(np.float32)
+
 tX = testarrX[:,:,2:] 
 X = arrX
 Y = arrY 
@@ -302,11 +312,11 @@ assert(X.shape[1:]==tX.shape[1:])
 #%%
 track = pd.DataFrame(data={"Machine Type":[],"batch_size":[],"modelSum":[],"look_back":[],"optimizer":[],"lr":lr,"epochs":[],"history":[],"RMSE":[],"r2":[]})
 
-#%% Train 
-from keras.models import Sequential
-from keras.layers import Dense, LSTM, Dropout, LeakyReLU
-from keras.optimizers import Adam, SGD, Adamax,RMSprop 
-import keras.backend as K
+#%% LSTM 
+from keras.models import Sequential,load_model
+from keras.layers import Dense, LSTM, Dropout, LeakyReLU  
+
+from keras.optimizers import Adam, SGD, Adamax,RMSprop  
 import tensorflow as tf 
 from keras.callbacks import EarlyStopping, ModelCheckpoint
 """batch_size = 1000
@@ -326,31 +336,25 @@ history = model.fit(X, Y, validation_data= (tX,tY),epochs=epochs, batch_size=bat
                                   ModelCheckpoint("model.h5",monitor='val_loss', save_best_only=True, mode='min', verbose=0)]) 
 
 
-"""
-def r2custom(y_true, y_pred):
-    """Coefficient of Determination 
-    """
-    SS_res =  K.sum(K.square( y_true - y_pred ))
-    SS_tot = K.sum(K.square( y_true - K.mean(y_true) ) )
-    return ( 1 - SS_res/(SS_tot + K.epsilon()) )
-
+""" 
 model = Sequential()
 model.add(LSTM(
          input_shape=(look_back, featureCount),
-         units=100,
-         return_sequences=True,activation="relu"))
+         units=120,
+         return_sequences=True))
 model.add(Dropout(0.2))
 model.add(LSTM(
-          units=50,
-          return_sequences=False,activation="relu"))
+          units=60,
+          return_sequences=False))
 model.add(Dropout(0.2))
-model.add(Dense(units=1,activation="relu")) 
-model.compile(loss='mean_squared_error', optimizer='adam',metrics=['mae',r2custom])
+model.add(Dense(units=6,activation="linear")) 
+model.add(Dense(units=1,activation="linear")) 
+model.compile(loss='mean_squared_error', optimizer='rmsprop',metrics=['mae'  ])
 
 print(model.summary())
 
 # fit the network
-history = model.fit(X, Y, epochs=100, batch_size=200,  validation_split=0.05, verbose=2,use_multiprocessing=True,
+history = model.fit(X, Y, epochs=100, batch_size=200,  validation_data=(tX,tY), verbose=2,use_multiprocessing=True,
           callbacks = [EarlyStopping(monitor='val_loss', min_delta=0, patience=30, verbose=0, mode='min'),
                        ModelCheckpoint("model.h5",monitor='val_loss', save_best_only=True, mode='min', verbose=1)]
           )
@@ -360,67 +364,50 @@ plt.plot(history.history["loss"])
 plt.plot(history.history["val_loss"])
 plt.title("LSTM Training")
 plt.show()
-#%% Visualize Forecast
-import math
-from sklearn.metrics import mean_squared_error
-from sklearn.metrics import r2_score
-from keras.models import  load_model 
-#model = load_model("model.h5",compile=True)
-testPredict = model.predict(tX)
-plt.plot(testPredict)
-plt.plot(tY)
-plt.show()
-testScore = math.sqrt(mean_squared_error(tY, testPredict))
-r2score = r2_score(tY,testPredict)
-print('Test Score: %.2f RMSE' % (testScore))
-print('Test Score: %.2f r2' % (r2score)) 
-import io
-def get_model_summary(model):
-    stream = io.StringIO()
-    model.summary(print_fn=lambda x: stream.write(x + '\n'))
-    summary_string = stream.getvalue()
-    stream.close()
-    return summary_string
-
-model_summary_string = get_model_summary(model)
-
-track = track.append({"Machine Type":[],"batch_size":batch_size,"modelSum":get_model_summary(model),"look_back":look_back,"optimizer":optimizer,"lr":lr,"epochs":epochs,"history":history.history,"RMSE":testScore,"r2":r2score},ignore_index=True)
-#%% 
-trackML = pd.DataFrame(data={"MachineType":[],"Model":[],"look_back":[],"RMSE":[],"r2":[]})
 #%% ML Preprocesssing and testing functionss 
+import math 
+from sklearn.metrics import mean_squared_error,mean_absolute_error,r2_score 
 def Reshape3D(X):
-    return np.reshape(X,(X.shape[0], featureCount*look_back)) 
-def testModel(model,MX,Y,MtX,tY):
-    Mmodel = model.fit(MX, Y)  
-    testPredict = Mmodel.predict(MtX)
+    return np.reshape(X,(X.shape[0], featureCount*look_back))  
+def testModel(model,MtX,tY): 
+    testPredict = model.predict(MtX)
     testPredict = np.reshape(testPredict,testPredict.shape[0]) 
     tY = tY.astype("float")
-    testPredict = testPredict.astype("float")
-    crop = -1
-    plt.plot(tY[:crop])
-    plt.plot(testPredict[:crop])
-    plt.show()
-    testScore = math.sqrt(mean_squared_error(tY, testPredict))
+    testPredict = testPredict.astype("float")  
+    testScore = (mean_absolute_error(tY, testPredict))
+    root_mse = math.sqrt(mean_squared_error(tY,testPredict))
     r2score = r2_score(tY,testPredict)
-    print('Test Score: %.2f RMSE' % (testScore))
-    print('Test Score: %.2f r2' % (r2score))
-    plt.title(str(model))
+    print(str(model)+'\nTest Score: %.2f MAE' % (testScore))
+    print('Test Score: %.2f RMSE' % (root_mse))
+    print('Test Score: %.2f r2' % (r2score)) 
     plt.plot(testPredict)
     plt.plot(tY)
+    plt.title(str(model))
     plt.show()
     return testScore,r2score
-#%%          
+#%% TEst for LSTM 
+model = load_model("model.h5",compile=True)
+testModel(model,tX,tY)
+ #%% 
+trackML = pd.DataFrame(data={"MachineType":[],"Model":[],"look_back":[],"RMSE":[],"r2":[]})
+
+#%% Machine Learning Training and Test       
 from sklearn.linear_model import LinearRegression, Lasso,Ridge, BayesianRidge 
 import xgboost as xgb
 from sklearn import svm
-from sklearn import tree
-models = [xgb.XGBRegressor(),LinearRegression(),Lasso(),Ridge(),BayesianRidge()]#LinearRegression(), xgb.XGBRegressor()] 
+from sklearn import tree 
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.neural_network import MLPRegressor
+from lightgbm import LGBMRegressor
+from catboost import CatBoostRegressor
+models = [xgb.XGBRegressor(),Lasso(),tree.DecisionTreeRegressor()]#LinearRegression(), xgb.XGBRegressor(),Lasso(),MLPRegressor(max_iter=500),LGBMRegressor(),CatBoostRegressor( ),Ridge(),BayesianRidge(),tree.DecisionTreeRegressor(),svm.SVR(),GradientBoostingRegressor()] 
 MtX = Reshape3D(tX)  
 MX = Reshape3D(X)
 testScores = []
 r2scores = []
 for MLmodel in models:
-    testScore,r2score = testModel(MLmodel,MX,Y,MtX,tY)
+    MLmodel = MLmodel.fit(MX,Y)
+    testScore,r2score = testModel(MLmodel,MtX,tY)
     testScores.append(testScore)
     r2scores.append(r2score)
 # make predictions 
@@ -429,3 +416,75 @@ for MLmodel in models:
 for i in range(len(models)):
     
     trackML = trackML.append({"MachineType":index,"Model":models[i],"look_back":look_back,"RMSE":testScores[i],"r2":r2scores[i]},ignore_index=True)
+    
+#%% Stacking Ensembling Machine Learning
+# make a prediction with a stacking ensemble
+from sklearn.datasets import make_regression
+from sklearn.linear_model import LinearRegression
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.svm import SVR
+from sklearn.ensemble import StackingRegressor
+# define dataset
+# lasso + mlp -> mlp = 0.66 r^2 18.77 MAE,  eğer 30 devire bakarssa 0.68, cv=2, iter = 200 
+# lasso + mlp -> mlp = 0.7 r^2, 17.57 MAE, 22.76 RMSE, 31 look_back, 250 iterasyon, 0.75 feature threshold, removesame , cv=2-> Paper'daki en iyi sonuçtan daha başarılı
+# lasso + mlp -> mlp = 0.71 r^2, 17.03 MAE, 22.50 RMSE, 31 look_back, 300 iterasyon, 0.75 feature threshold, removesame , cv=2-> Paper'daki en iyi sonuçtan daha başarılı
+# lasso + mlp -> mlp = 0.72 r^2, 17.27 MAE, 22.09 RMSE, 31 look_back, 300 iterasyon, 0.75 feature threshold, removesame th=2, cv=2-> Paper'daki en iyi sonuçtan daha başarılı
+
+# Lasso + mlp -> svm = 0.68 r^2, 17.61 MAE, 30 devir cv=2
+# 31 devir, Lasso + mlp -> mlp = 0.67 r^2, 18.42 MAE
+# define the base models
+def ScatterPredictions(models,X,Y):
+    axis = np.arange(X.shape[0]) 
+    fig = plt.figure()
+    ax1 = fig.add_subplot(111)
+    ax1.scatter(axis, Y, s=10,  label="REAL Y", c='#FF4500')   
+    for model in models: 
+        ax1.scatter(axis, model.predict(X), s=10,  label=str(model)[:10]) 
+    
+    plt.title("Comparison of model predictions")
+    plt.show()  
+    
+MtX = Reshape3D(tX)  
+MX = Reshape3D(X)
+print(MX.shape,Y.shape,MtX.shape,tY.shape)
+max_iter = 300
+"""
+models = [Lasso().fit(MX,Y), MLPRegressor(max_iter=max_iter).fit(MX,Y)]
+ScatterPredictions(models,MX,Y) """ 
+level0 = list()
+level0.append(('lasso', Lasso())) 
+level0.append(('mlp', MLPRegressor(max_iter=max_iter)))    
+# define meta learner model
+level1 = MLPRegressor(max_iter=max_iter )
+# define the stacking ensemble
+model = StackingRegressor(estimators=level0, final_estimator=level1, cv=2)
+# fit the model on all available data
+model =  model.fit(MX, Y)
+# make a prediction for one example
+testModel(model,MtX,tY)
+
+""""""
+#%% ANALYSIS ABOUT REGRESSION
+from sklearn.inspection import permutation_importance
+result = permutation_importance(model, X, Y, n_repeats=10,
+                                random_state=42, n_jobs=2)
+sorted_idx = result.importances_mean.argsort()
+
+fig, ax = plt.subplots()
+ax.boxplot(result.importances[sorted_idx].T,
+           vert=False, labels=trainX.columns[sorted_idx])
+ax.set_title("Permutation Importances (test set)")
+fig.tight_layout()
+plt.show()
+
+
+#%% AVE MODEL
+
+from sklearn.externals import joblib 
+  
+# Save the model as a pickle in a file 
+joblib.dump(model, ' .pkl') 
+
+#%% LOAD MODEL 
+model = joblib.load("model71.pkl")
