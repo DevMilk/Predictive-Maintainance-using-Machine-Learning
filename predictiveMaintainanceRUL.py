@@ -163,15 +163,18 @@ for i in range(4):
     testYs.append(getData("RUL",i+1,names=["Y"]))       
 
 #%% Makinelerden birini seç
-index = 0
+index = 3
 traindf = traindfs[index]
 testdf  = testdfs[index]
 testY   = testYs[index]  
 #           R^2   MAE     RMSE 
 # Index 0  0.74  17.27   21.27 : LSTM
+# Index 0  0.79  15.09   18.8 : LSTM, CROP 50
 # Index 0  0.72  17.27   27.09 : STACK MLP+LASSO -> MLP LOOK_BACK: 31
+# Index 0  0.73  16.31   21.65 : LSTM, PADDING 50
 # Index 1  0.61  25.66   33.64 : LGMRegressor           LOOK_BACK: 21
 # Index 2  0.51  20.49   29.01 : STACK MLP+LASSO -> MLP LOOK_BACK: 35
+# Index 2  0.62  19.57   25.66 : STACK MLP+LASSO -> MLP LOOK_BACK: 50 PADDING
 # Index 3 -> look back = 19
 # Denenecekler: Sabit look_back ile bu look_back'in altında kalan veriler gözardı edilecek
 
@@ -244,7 +247,7 @@ input_features = get_train_columns(trainX,0.75)
 trainX, testX = trainX[input_features], testX[input_features]
 #Her unit için çalıştığı en fazla devir
 trainYs = traindf.groupby(["unit_num"]).time_in_cycles.max()
-#%% YAPIŞ 
+#%% FARKLI BİR YOL, SONRADAN DÖNECEĞİM BUNA  
 X = trainX.groupby(["unit_num"]).agg([min,max,'mean','std','var','count'])
 X = X.iloc[:,6:]
 X = normalizedf(X) 
@@ -257,15 +260,36 @@ X = normalizedf(X)
 
 
 #%% Method 2
-
- 
+CROP = True
+PADDING = True 
+#Prepare train for all units without intercepting with each other     
+look_back = 50 #min(trainYs.min(),testX.groupby(["unit_num"]).time_in_cycles.max().min())
+assert look_back<=min(trainYs.min(),testX.groupby(["unit_num"]).time_in_cycles.max().min()) or CROP
+unitnums = trainX.unit_num.unique() 
+def Padding(tX):
+    unitnums = tX.unit_num.unique()
+    dfPerUnit = []
+    for i in unitnums:
+        maxCycle = int(tX.loc[tX.unit_num==i].time_in_cycles.max())
+        tmp = tX.loc[tX.unit_num==i]
+        if(maxCycle<look_back):
+            for j in range(look_back-maxCycle):
+                tmp = tmp.append(tmp.iloc[-1] , ignore_index= True)     
+                tmp.iloc[-1].time_in_cycles = maxCycle + j + 1 
+        dfPerUnit.append(tmp)
+    return pd.concat(dfPerUnit)    
+    
 X = trainX.copy()
 Y = trainYs.copy()
 tX = testX.copy()
 tY = testY.copy()
+if(PADDING):
+    tX = Padding(tX)
+    X = Padding(X) 
+
 X["time"] = X["time_in_cycles"]
 tX["time"] = tX["time_in_cycles"]
-unitnums = trainX.unit_num.unique() 
+
 X, tX = normalizedf(X,offset=2).fillna(0), normalizedf(tX,offset=2).fillna(0) 
 
 
@@ -277,23 +301,24 @@ for i in range(len(unitnums)):
        
     
 
-#Prepare train for all units without intercepting with each other     
-look_back = min(trainYs.min(),testX.groupby(["unit_num"]).time_in_cycles.max().min())
-assert look_back<=min(trainYs.min(),testX.groupby(["unit_num"]).time_in_cycles.max().min())
  
-unitnums = trainX.unit_num.unique()  
+#Padding: En arkadaki değere look_back-size kadar aynı değeri ekle, cycle değerlerini yeni eklenenlere göre düzenle  
+unitnums = trainX.unit_num.unique()    
+ 
 x, y = create_dataset(X.loc[X.unit_num==unitnums[0]].iloc[:,2:],look_back)
 arrX = x
 arrY = y
 for i in range(1,len(unitnums)): 
-    x, y = create_dataset(X.loc[X.unit_num==unitnums[i]].iloc[:,2:],look_back)
-    arrX = np.vstack((arrX,x))
-    arrY = np.append(arrY,y)
+    machineData = X.loc[X.unit_num==unitnums[i]]
+    if(CROP and machineData.shape[0]>look_back):
+        x, y = create_dataset(machineData.iloc[:,2:],look_back)
+        arrX = np.vstack((arrX,x))
+        arrY = np.append(arrY,y)
 print(tX.shape,X.shape)
 
 #Prepare test for all units without intercepting with each other    
     
-testarrX = [tX[tX['unit_num']==id].values[-look_back:] for id in unitnums ]
+testarrX = [tX[tX['unit_num']==id].values[-look_back:] for id in unitnums if (CROP and tX[tX['unit_num']==id].shape[0]>=look_back)]
 print(tX.shape,X.shape)
 
 if(not testarrX[-1].shape[0]):
@@ -301,9 +326,11 @@ if(not testarrX[-1].shape[0]):
 testarrX = np.asarray(testarrX ).astype(np.float32)
 
 tX = testarrX[:,:,2:] 
+remainingIdsAfterCrop = testarrX[:,0,0].astype(int)
 X = arrX
 Y = arrY 
-tY = testY
+#edit tY for remainingIds after Crop. (-1 for mapping ids to indexes)
+tY = testY.iloc[remainingIdsAfterCrop-1].Y
 featureCount = X.shape[2] 
 #%% Check Shapes
 print("Train shape: ",X.shape," ", Y.shape,"\nTest shape:",tX.shape," ",tY.shape)
@@ -340,23 +367,22 @@ history = model.fit(X, Y, validation_data= (tX,tY),epochs=epochs, batch_size=bat
 model = Sequential()
 model.add(LSTM(
          input_shape=(look_back, featureCount),
-         units=120,
+         units=100,
          return_sequences=True))
 model.add(Dropout(0.2))
 model.add(LSTM(
-          units=60,
+          units=50,
           return_sequences=False))
-model.add(Dropout(0.2))
-model.add(Dense(units=6,activation="linear")) 
+model.add(Dropout(0.2)) 
 model.add(Dense(units=1,activation="linear")) 
 model.compile(loss='mean_squared_error', optimizer='rmsprop',metrics=['mae'  ])
 
 print(model.summary())
 
 # fit the network
-history = model.fit(X, Y, epochs=100, batch_size=200,  validation_data=(tX,tY), verbose=2,use_multiprocessing=True,
+history = model.fit(X, Y, epochs=100, batch_size=200 ,  validation_data=(tX,tY), verbose=2,use_multiprocessing=True,
           callbacks = [EarlyStopping(monitor='val_loss', min_delta=0, patience=30, verbose=0, mode='min'),
-                       ModelCheckpoint("model.h5",monitor='val_loss', save_best_only=True, mode='min', verbose=1)]
+                       ModelCheckpoint("modelCROP.h5",monitor='val_loss', save_best_only=True, mode='min', verbose=1)]
           )
 
 #Plot History
@@ -386,7 +412,8 @@ def testModel(model,MtX,tY):
     plt.show()
     return testScore,r2score
 #%% TEst for LSTM 
-model = load_model("model.h5",compile=True)
+from keras.models import load_model
+model = load_model("modelCROP.h5",compile=True)
 testModel(model,tX,tY)
  #%% 
 trackML = pd.DataFrame(data={"MachineType":[],"Model":[],"look_back":[],"RMSE":[],"r2":[]})
@@ -400,7 +427,7 @@ from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.neural_network import MLPRegressor
 from lightgbm import LGBMRegressor
 from catboost import CatBoostRegressor
-models = [xgb.XGBRegressor(),Lasso(),tree.DecisionTreeRegressor()]#LinearRegression(), xgb.XGBRegressor(),Lasso(),MLPRegressor(max_iter=500),LGBMRegressor(),CatBoostRegressor( ),Ridge(),BayesianRidge(),tree.DecisionTreeRegressor(),svm.SVR(),GradientBoostingRegressor()] 
+models = [LGBMRegressor()]#LinearRegression(), xgb.XGBRegressor(),Lasso(),MLPRegressor(max_iter=500),LGBMRegressor(),CatBoostRegressor( ),Ridge(),BayesianRidge(),tree.DecisionTreeRegressor(),svm.SVR(),GradientBoostingRegressor()] 
 MtX = Reshape3D(tX)  
 MX = Reshape3D(X)
 testScores = []
