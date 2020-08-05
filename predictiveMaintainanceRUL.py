@@ -246,18 +246,7 @@ testX = testdf.drop(columns=deletedCols)
 input_features = get_train_columns(trainX,0.75) 
 trainX, testX = trainX[input_features], testX[input_features]
 #Her unit için çalıştığı en fazla devir
-trainYs = traindf.groupby(["unit_num"]).time_in_cycles.max()
-#%% FARKLI BİR YOL, SONRADAN DÖNECEĞİM BUNA  
-X = trainX.groupby(["unit_num"]).agg([min,max,'mean','std','var','count'])
-X = X.iloc[:,6:]
-X = normalizedf(X) 
-#Aynı kalanlara gerek yok (Eğer her texttekileri ayrı ele alacaksak)          
-#Bir korelasyon thresholdu belirleyip o thresholdu aşanları train'e katmayalım
-#Training'de s14 ve op_setting 3 yer almayacak
-#Method 1: std, average, max ve min ve son cycle'ın son değerlerini al çıkış olarak kalanı ver
-#Method 2: LookBack ile tahmin et (Buradaki look_back en fazla trainYs'deki en düşük değeri kadar olabilir.)
-#Method 3: 
-
+trainYs = traindf.groupby(["unit_num"]).time_in_cycles.max() 
 
 #%% Method 2
 CROP = True
