@@ -8,8 +8,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-
-os.chdir("C:\\Users\\Uğur Keskin\\Desktop\\Staj\\Predictive maintenence\\Data2")
+ 
 figDir = "Figures/" 
 #%%
 from sklearn import preprocessing
